@@ -36,7 +36,6 @@ pip-wheel-metadata/
 Thumbs.db
 
 .env
-.env.*
 *.local
 
 *.log

@@ -14,7 +14,9 @@ from .models import (
     CityGrid,
     EmergencyCall,
     EnvironmentState,
+    Observation,
     StepMetrics,
+    StepResult,
     UrgencyLevel,
 )
 
@@ -27,7 +29,7 @@ class EnvironmentConfig:
     max_steps: int = 200
     task_name: str = "EmergencyDispatch"
     urgency_weights: dict[UrgencyLevel, float] | None = None
-    per_step_cost: float = -0.5
+    per_step_cost: float = -0.1
     invalid_dispatch_penalty: float = -5.0
     critical_timeout_penalty: float = -100.0
     high_timeout_penalty: float = -40.0
@@ -36,6 +38,10 @@ class EnvironmentConfig:
     minimum_dispatch_distance_limit: int = 5
     end_on_critical_timeout: bool = True
     end_on_all_fuel_depleted: bool = True
+    distance_shaping_reward: float = 0.1
+    fuel_management_bonus: float = 0.5
+    coordination_bonus: float = 2.0
+    timeout_warning_penalty: float = -2.0
 
     def resolved_urgency_weights(self) -> dict[UrgencyLevel, float]:
         return self.urgency_weights or {
@@ -53,7 +59,7 @@ class EmergencyDispatchEnv:
         self.rng = np.random.default_rng(seed)
         self.step_count = 0
         self.cumulative_reward = 0.0
-        self.grid = self._build_grid(self.config.grid_size)
+        self.grid = CityGrid(size=self.config.grid_size)
         self.ambulances: list[Ambulance] = []
         self.active_calls: list[EmergencyCall] = []
         self.completed_calls: list[EmergencyCall] = []
@@ -61,13 +67,10 @@ class EmergencyDispatchEnv:
         self._call_counter = 0
         self.reset()
 
-    def _build_grid(self, size: int) -> CityGrid:
-        return CityGrid(size=size, cells=[[0 for _ in range(size)] for _ in range(size)])
-
     def reset(self) -> dict[str, Any]:
         self.step_count = 0
         self.cumulative_reward = 0.0
-        self.grid = self._build_grid(self.config.grid_size)
+        self.grid = CityGrid(size=self.config.grid_size)
         self.active_calls = []
         self.completed_calls = []
         self.metrics = StepMetrics()
@@ -87,18 +90,31 @@ class EmergencyDispatchEnv:
         return self.state()
 
     def state(self) -> dict[str, Any]:
-        return EnvironmentState(
+        return self._build_observation().model_dump(mode="json")
+
+    def _build_observation(self) -> Observation:
+        return Observation(
             step_count=self.step_count,
-            grid=self.grid,
+            grid_size=self.grid.size,
             ambulances=self.ambulances,
             active_calls=self.active_calls,
             completed_calls=self.completed_calls,
             cumulative_reward=self.cumulative_reward,
             max_steps=self.config.max_steps,
             metrics=self.metrics,
-            task_name=self.config.task_name,
+            distance_matrix=self._build_distance_matrix(),
             mode="done" if self._is_done() else "running",
-        ).model_dump(mode="json")
+        )
+
+    def _build_distance_matrix(self) -> dict[str, dict[str, int]]:
+        """Build a precomputed Manhattan distance matrix between ambulances and active calls."""
+        matrix: dict[str, dict[str, int]] = {}
+        for ambulance in self.ambulances:
+            matrix[ambulance.id] = {}
+            for call in self.active_calls:
+                dist = abs(ambulance.x - call.x) + abs(ambulance.y - call.y)
+                matrix[ambulance.id][call.id] = dist
+        return matrix
 
     def step(self, action: Action | dict[str, Any] | None) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
         parsed_action = self._coerce_action(action)
@@ -118,7 +134,7 @@ class EmergencyDispatchEnv:
         self.step_count += 1
         self.cumulative_reward += reward
         done = self._is_done()
-        state = self.state()
+        obs = self._build_observation()
         info = {
             "applied_action": parsed_action.model_dump(mode="json") if parsed_action else None,
             "movement": movement_info,
@@ -126,7 +142,17 @@ class EmergencyDispatchEnv:
             "completed_call_count": len(self.completed_calls),
             "metrics": self.metrics.model_dump(mode="json"),
         }
-        return state, reward, done, info
+        return obs.model_dump(mode="json"), reward, done, info
+
+    def step_typed(self, action: Action | dict[str, Any] | None) -> StepResult:
+        """OpenEnv-spec typed step returning StepResult."""
+        obs_dict, reward, done, info = self.step(action)
+        return StepResult(
+            observation=Observation.model_validate(obs_dict),
+            reward=reward,
+            done=done,
+            info=info,
+        )
 
     def _coerce_action(self, action: Action | dict[str, Any] | None) -> Action | None:
         if action is None:
@@ -275,6 +301,8 @@ class EmergencyDispatchEnv:
         if call.urgency == UrgencyLevel.CRITICAL:
             self.metrics.resolved_critical_calls += 1
         self.metrics.total_response_time += response_time
+        if call.urgency == UrgencyLevel.CRITICAL:
+            self.metrics.total_response_time_critical += response_time
 
         ambulance.status = AmbulanceStatus.RETURNING
         ambulance.assigned_call_id = None
@@ -372,6 +400,28 @@ class EmergencyDispatchEnv:
                         call_id=call.id,
                     ).model_dump(mode="json")
                 )
+        return actions
+
+    def valid_actions_for(self, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Return only valid actions given the current (or provided) state. For action masking."""
+        if state is None:
+            state = self.state()
+        actions: list[dict[str, Any]] = []
+        active_calls = [c for c in state.get("active_calls", []) if not c.get("resolved", False)]
+        assigned_call_ids = {a.get("assigned_call_id") for a in state.get("ambulances", []) if a.get("assigned_call_id")}
+
+        for amb in state.get("ambulances", []):
+            # HOLD is always valid
+            actions.append({"action_type": "hold", "ambulance_id": amb["id"], "call_id": None})
+            # RETURN_TO_BASE only if not assigned to an active call
+            if amb.get("assigned_call_id") not in assigned_call_ids or amb["status"] in ("idle", "holding"):
+                actions.append({"action_type": "return_to_base", "ambulance_id": amb["id"], "call_id": None})
+            # DISPATCH/REASSIGN only for idle/holding/dispatched ambulances to unassigned calls
+            if amb["status"] in ("idle", "holding", "dispatched") and amb.get("fuel_level", 0) > 0:
+                for call in active_calls:
+                    if call["id"] not in assigned_call_ids or call["id"] == amb.get("assigned_call_id"):
+                        action_type = "dispatch" if amb["status"] in ("idle", "holding") else "reassign"
+                        actions.append({"action_type": action_type, "ambulance_id": amb["id"], "call_id": call["id"]})
         return actions
 
     def heuristic_action(self) -> dict[str, Any]:
