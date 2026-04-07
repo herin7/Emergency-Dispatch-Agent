@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON = Path(r"C:\Users\Admin\AppData\Local\Programs\Python\Python312\python.exe")
+PYTHON = Path(sys.executable)
 
 
 class InferenceFormatTests(unittest.TestCase):

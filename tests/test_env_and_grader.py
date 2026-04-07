@@ -11,7 +11,7 @@ class EmergencyDispatchEnvTests(unittest.TestCase):
         env = EasyDispatchTask().create_env(seed=1)
         state = env.reset()
 
-        self.assertEqual(state["grid"]["size"], 10)
+        self.assertEqual(state["grid_size"], 10)
         self.assertEqual(len(state["ambulances"]), 3)
         self.assertEqual(state["active_calls"], [])
 
@@ -26,6 +26,7 @@ class EmergencyDispatchEnvTests(unittest.TestCase):
         self.assertIsInstance(reward, float)
         self.assertIsInstance(done, bool)
         self.assertIn("metrics", info)
+        self.assertIn("distance_matrix", state)
 
     def test_grader_score_is_bounded(self) -> None:
         task = HardDispatchTask()

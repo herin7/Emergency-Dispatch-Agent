@@ -17,26 +17,68 @@ MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
 TASK_NAME = os.getenv("EMERGENCY_DISPATCH_TASK", "hard").lower()
 BENCHMARK = "EmergencyDispatch"
-# MAX_COMPLETION_TOKENS = 120
 MAX_COMPLETION_TOKENS = 60
 TEMPERATURE = 0.1
 
-SYSTEM_PROMPT = """You are an expert emergency dispatch planner.
+SYSTEM_PROMPT = """You are an expert emergency dispatch coordinator managing a fleet of ambulances.
 
-Goal:
-Maximize total reward by efficiently assigning ambulances to calls.
+## OBJECTIVE
+Maximize total reward by efficiently dispatching ambulances to emergency calls while managing fuel resources.
 
-Rules:
-- Each call should be handled once.
-- Avoid assigning same ambulance repeatedly to same call.
-- Prefer closest available ambulance.
-- Avoid idle actions if calls exist.
-- Reassign only if beneficial.
+## STATE STRUCTURE
+- `ambulances[]`: Fleet with fields: id, x, y, fuel_level (0-100), status, base_x, base_y, target_x, target_y, assigned_call_id
+- `active_calls[]`: Pending emergencies with: id, x, y, urgency, arrival_time, assigned_ambulance_id
+- `completed_calls[]`: Resolved calls
+- `metrics`: Episode statistics (total_calls, resolved_calls, critical_calls, etc.)
+- `step_count`: Current simulation step (0 to max_steps)
+- `distance_matrix`: Precomputed Manhattan distances `{amb_id: {call_id: distance}}` — use this to find nearest ambulance
 
-Strictly return ONE JSON:
-{"action_type":"dispatch|return_to_base|hold|reassign","ambulance_id":"amb_X","call_id":"call_Y"}
+## URGENCY LEVELS (Critical > High > Medium > Low)
+- **Critical**: Must resolve within 15 steps or receive -100 penalty
+- **High**: Must resolve within 25 steps or receive -40 penalty
+- **Medium**: Standard priority
+- **Low**: Lowest priority
 
-No explanation. No extra fields."""
+## AMBULANCE STATUS VALUES
+- **idle**: Available for dispatch
+- **holding**: Stationary, available for dispatch
+- **dispatched**: En route to call location
+- **returning**: Returning to base after call
+- **out_of_fuel**: Cannot move until refueled at base
+
+## ACTIONS
+- **dispatch**: Send idle/holding ambulance to call (requires ambulance_id + call_id)
+- **reassign**: Redirect already-dispatched ambulance to higher-priority call
+- **return_to_base**: Send ambulance back to refuel (auto-triggers when fuel=0)
+- **hold**: Keep ambulance stationary (only if no urgent calls exist)
+
+## STRATEGIC GUIDELINES
+1. **Use distance_matrix**: Look up `distance_matrix[ambulance_id][call_id]` to find the nearest available ambulance for each call
+2. **Prioritize by urgency**: Always handle Critical calls first, then High, then Medium, then Low
+3. **Manage fuel**: Don't dispatch ambulances with <10 fuel to distant calls (>5 distance)
+4. **Avoid unnecessary holds**: Only hold if no active calls exist
+5. **Don't repeat assignments**: Avoid assigning same ambulance to same call repeatedly
+6. **Return empty ambulances**: Send returning ambulances to base promptly
+7. **Balance coverage**: Keep ambulances distributed across the grid
+
+## REWARD SIGNALS
+- Resolving Critical call quickly (≤5 steps): +50 bonus
+- Resolving High call quickly (≤10 steps): +25 bonus
+- Per-step cost: -0.1 (efficiency pressure)
+- Invalid dispatch: -5.0 penalty
+- Fuel exhaustion mid-dispatch: -30.0 penalty
+- Critical timeout (>15 steps): -100.0 penalty
+- High timeout (>25 steps): -40.0 penalty
+
+## OUTPUT FORMAT
+Respond with EXACTLY ONE JSON object and NOTHING ELSE:
+{"action_type":"dispatch","ambulance_id":"amb_0","call_id":"call_0"}
+
+Valid action_type values: dispatch, return_to_base, hold, reassign
+For hold/return_to_base: call_id should be null or omitted
+For dispatch/reassign: must include both ambulance_id and call_id
+
+DO NOT include explanations, markdown formatting, or extra fields."""
 
 def get_task() -> tuple[str, Any]:
     task_map = {
@@ -55,7 +97,7 @@ def build_client() -> OpenAI | None:
     return OpenAI(
         base_url=API_BASE_URL,
         api_key=HF_TOKEN,
-        max_retries=1, 
+        max_retries=1,
         timeout=60.0,
     )
 
@@ -132,197 +174,23 @@ def compact_action(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_deadline_guard_action(
-    state: dict[str, Any],
-    last_action: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    critical_calls = [call for call in state.get("active_calls", []) if call["urgency"] == "Critical"]
-    if not critical_calls:
-        return None
-
-    step_count = state.get("step_count", 0)
-    ambulances = [ambulance for ambulance in state.get("ambulances", []) if ambulance["fuel_level"] > 0]
-    if not ambulances:
-        return None
-
-    best_action: dict[str, Any] | None = None
-    best_score: tuple[int, int, int, int, int] | None = None
-
-    for call in critical_calls:
-        elapsed = step_count - call["arrival_time"]
-        slack = 15 - elapsed
-        if slack > 4:
-            continue
-
-        assigned_ambulance = next(
-            (
-                ambulance
-                for ambulance in ambulances
-                if ambulance.get("assigned_call_id") == call["id"]
-            ),
-            None,
-        )
-        if assigned_ambulance is not None and slack <= 2:
-            return {
-                "action_type": "dispatch" if assigned_ambulance["status"] in {"idle", "holding"} else "reassign",
-                "ambulance_id": assigned_ambulance["id"],
-                "call_id": call["id"],
-            }
-
-        for ambulance in ambulances:
-            eta = abs(ambulance["x"] - call["x"]) + abs(ambulance["y"] - call["y"])
-            busy_penalty = 0 if ambulance["status"] in {"idle", "holding"} else 2
-            assignment_priority = 0 if ambulance.get("assigned_call_id") == call["id"] else 1
-            action = {
-                "action_type": "dispatch" if ambulance["status"] in {"idle", "holding"} else "reassign",
-                "ambulance_id": ambulance["id"],
-                "call_id": call["id"],
-            }
-            repeat_penalty = 1 if action == last_action else 0
-            score = (
-                assignment_priority,
-                elapsed * -1,
-                0 if eta <= slack else 1,
-                max(eta - slack, 0),
-                busy_penalty,
-                repeat_penalty,
-            )
-            if best_score is None or score < best_score:
-                best_score = score
-                best_action = action
-
-    return best_action
-
-
-def build_safe_fallback(
-    state: dict[str, Any],
-    fallback: dict[str, Any],
-    bad_pairs: set[tuple[str | None, str | None]],
-    bad_calls: set[str],
-    last_action: dict[str, Any] | None,
-) -> dict[str, Any]:
-    deadline_guard_action = build_deadline_guard_action(state=state, last_action=last_action)
-    if deadline_guard_action is not None:
-        return deadline_guard_action
-
-    ambulances = [ambulance for ambulance in state.get("ambulances", []) if ambulance["fuel_level"] > 0]
-    idle_ambulances = [ambulance for ambulance in ambulances if ambulance["status"] in {"idle", "holding"}]
-    assigned_call_ids = {ambulance["assigned_call_id"] for ambulance in ambulances if ambulance.get("assigned_call_id")}
-    fallback_action = compact_action(fallback)
-    fallback_pair = (fallback_action.get("ambulance_id"), fallback_action.get("call_id"))
-    has_active_calls = bool(state.get("active_calls"))
-
-    if fallback_pair not in bad_pairs and fallback_action.get("call_id") not in bad_calls and fallback_action != last_action:
-        if fallback_action.get("call_id") not in assigned_call_ids:
-            if not (fallback_action["action_type"] == "hold" and has_active_calls):
-                return fallback_action
-
-    urgency_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
-    best_action: dict[str, Any] | None = None
-    best_score: tuple[int, int, int, int] | None = None
-
-    for call in state.get("active_calls", []):
-        if call["id"] in assigned_call_ids or call["id"] in bad_calls:
-            continue
-        for ambulance in idle_ambulances:
-            candidate = {
-                "action_type": "dispatch",
-                "ambulance_id": ambulance["id"],
-                "call_id": call["id"],
-            }
-            pair = (candidate["ambulance_id"], candidate["call_id"])
-            if pair in bad_pairs or candidate == last_action:
-                continue
-
-            eta = abs(ambulance["x"] - call["x"]) + abs(ambulance["y"] - call["y"])
-            score = (
-                urgency_rank.get(call["urgency"], 99),
-                call["arrival_time"],
-                eta,
-                -int(ambulance["fuel_level"]),
-            )
-            if best_score is None or score < best_score:
-                best_score = score
-                best_action = candidate
-
-    if best_action is not None:
-        return best_action
-
-    for ambulance in idle_ambulances:
-        candidate = {
-            "action_type": "hold",
-            "ambulance_id": ambulance["id"],
-            "call_id": None,
-        }
-        if candidate != last_action:
-            return candidate
-
-    for call in state.get("active_calls", []):
-        for ambulance in ambulances:
-            candidate = {
-                "action_type": "dispatch" if ambulance["status"] in {"idle", "holding"} else "reassign",
-                "ambulance_id": ambulance["id"],
-                "call_id": call["id"],
-            }
-            pair = (candidate["ambulance_id"], candidate["call_id"])
-            if pair in bad_pairs or candidate["call_id"] in bad_calls or candidate == last_action:
-                continue
-
-            eta = abs(ambulance["x"] - call["x"]) + abs(ambulance["y"] - call["y"])
-            busy_penalty = 0 if ambulance["status"] in {"idle", "holding"} else 2
-            score = (
-                urgency_rank.get(call["urgency"], 99),
-                call["arrival_time"],
-                eta,
-                busy_penalty,
-                -int(ambulance["fuel_level"]),
-            )
-            if best_score is None or score < best_score:
-                best_score = score
-                best_action = candidate
-
-    if best_action is not None:
-        return best_action
-
-    for ambulance in ambulances:
-        if ambulance["status"] == "returning":
-            candidate = {
-                "action_type": "return_to_base",
-                "ambulance_id": ambulance["id"],
-                "call_id": None,
-            }
-            if candidate != last_action:
-                return candidate
-
-    for ambulance in idle_ambulances:
-        candidate = {
-            "action_type": "hold",
-            "ambulance_id": ambulance["id"],
-            "call_id": None,
-        }
-        if candidate != last_action:
-            return candidate
-
-    return {
-        "action_type": "hold",
-        "ambulance_id": state.get("ambulances", [{}])[0].get("id", "amb_0"),
-        "call_id": None,
-    }
-
-
 def choose_action(
     client: OpenAI | None,
     model_name: str,
     state: dict[str, Any],
+    valid_actions: list[dict[str, Any]],
     fallback: dict[str, Any],
 ) -> tuple[dict[str, Any], str | None]:
     fallback_action = compact_action(fallback)
     if client is None:
         return fallback_action, "missing_hf_token"
 
+    # Include valid actions in prompt for action masking
+    valid_actions_str = json.dumps(valid_actions[:20], separators=(",", ":"))  # cap to avoid huge prompts
     prompt = (
         "Current state JSON:\n"
-        f"{json.dumps(state, separators=(',', ':'))}\n"
+        f"{json.dumps(state, separators=(',', ':'))}\n\n"
+        f"Valid actions (choose one of these if possible):\n{valid_actions_str}\n\n"
         "Choose the best next action and respond with JSON only."
     )
     try:
@@ -339,7 +207,15 @@ def choose_action(
         candidate = extract_first_json_object(content)
         if candidate is None:
             return fallback_action, "invalid_model_action"
-        return compact_action(candidate), None
+        validated = compact_action(candidate)
+        # Validate against action mask
+        if valid_actions and validated not in valid_actions:
+            # Pick closest valid action
+            for va in valid_actions:
+                if va["action_type"] == validated["action_type"] and va.get("ambulance_id") == validated.get("ambulance_id"):
+                    return va, None
+            return fallback_action, "action_not_in_mask"
+        return validated, None
     except APIConnectionError:
         return fallback_action, "api_connection_error"
     except APITimeoutError:
@@ -363,74 +239,40 @@ def main() -> None:
     steps = 0
     success = False
     state = env.reset()
-    bad_pairs: set[tuple[str | None, str | None]] = set()
-    bad_calls: set[str] = set()
     last_action: dict[str, Any] | None = None
-    last_reward = 0.0
 
     log_start(task=task_label, env=BENCHMARK, model=MODEL_NAME)
 
     try:
         done = False
         while not done:
-            fallback_action = build_safe_fallback(
-                state=state,
-                fallback=env.heuristic_action(),
-                bad_pairs=bad_pairs,
-                bad_calls=bad_calls,
-                last_action=last_action,
-            )
+            # Get fallback action from heuristic
+            fallback_action = env.heuristic_action()
+
+            # Get valid action mask
+            valid_actions = env.valid_actions_for(state)
+
+            # Get action from LLM (with fallback on error)
             action, action_error = choose_action(
                 client=client,
                 model_name=MODEL_NAME,
                 state=state,
+                valid_actions=valid_actions,
                 fallback=fallback_action,
             )
 
-            if last_reward < -5:
-                action = fallback_action
-                action_error = "negative_reward_guard"
-
-            if steps > 15 and last_reward < -5:
-                action = fallback_action
-                action_error = "late_negative_guard"
-
-            if steps > 12:
-                action = fallback_action
-                action_error = "late_game_fallback"
-
-            pair = (action.get("ambulance_id"), action.get("call_id"))
-            if action.get("call_id") in bad_calls:
-                action = fallback_action
-                action_error = "bad_call_blocked"
-
-            if pair in bad_pairs:
-                action = fallback_action
-                action_error = "bad_pair_blocked"
-
-            if last_action and action == last_action:
-                action = fallback_action
-                action_error = "repeat_blocked"
-
-            if action["action_type"] == "hold" and state.get("active_calls"):
-                action = fallback_action
-                action_error = "hold_blocked"
-
+            # Execute action
             state, reward, done, _ = env.step(action)
             steps += 1
             rewards.append(float(reward))
 
-            if reward < -3:
-                bad_pairs.add((action["ambulance_id"], action["call_id"]))
-                if action["call_id"]:
-                    bad_calls.add(action["call_id"])
-
-            last_reward = reward
+            # Log step
             last_action = action
             action_str = json.dumps(action, separators=(",", ":"))
             log_step(step=steps, action=action_str, reward=float(reward), done=done, error=action_error)
 
-        score = grader.grade(state).final_score
+        # Grade final state with task-specific objective
+        score = grader.grade(state, task_name=task_label).final_score
         success = True
     except Exception as exc:
         success = False
