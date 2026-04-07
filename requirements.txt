@@ -1,0 +1,5 @@
+gymnasium
+pydantic
+numpy
+openai
+huggingface_hub
