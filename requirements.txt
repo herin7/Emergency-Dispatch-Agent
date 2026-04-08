@@ -3,3 +3,6 @@ pydantic
 numpy
 openai
 huggingface_hub
+gradio
+fastapi
+uvicorn

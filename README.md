@@ -19,10 +19,7 @@ The environment state includes:
 ```json
 {
   "step_count": 0,
-  "grid": {
-    "size": 10,
-    "cells": [[0, 0, ...], ...]
-  },
+  "grid_size": 10,
   "ambulances": [
     {
       "id": "amb_0",
@@ -145,15 +142,15 @@ The grader evaluates four dimensions with weighted scoring:
 **Final Score**: Weighted sum clipped to `[0.0, 1.0]`
 
 ### Baseline Scores (Heuristic Agent)
-Run 5 times with seed=7:
+Run 5 times across seeds [7, 42, 99, 123, 256]:
 
 | Task | Mean Score | Std Dev |
 |------|------------|---------|
-| Easy | *TBD* | *TBD* |
-| Medium | *TBD* | *TBD* |
-| Hard | *TBD* | *TBD* |
+| Easy | 0.7441 | ±0.2384 |
+| Medium | 0.6634 | ±0.0710 |
+| Hard | 0.3559 | ±0.0071 |
 
-*Run inference to populate baseline scores: `python inference.py`*
+*Reproduce with: `.venv\Scripts\python.exe tmp_baseline.py`*
 
 ## Inference
 
@@ -184,7 +181,6 @@ LOCAL_IMAGE_NAME=emergency-dispatch        # For Docker
 ## Setup
 
 ```powershell
-cd C:\Users\Priyank\Documents\CODE\Emergency-Dispatch-Agent
 py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -268,6 +264,7 @@ emergency_dispatch/
 ├── tasks.py             # Task definitions (Easy/Medium/Hard)
 └── grader.py            # Episode grading logic
 
+app.py                    # HF Space entry point (Gradio UI + FastAPI /reset /step /state)
 inference.py              # Baseline inference script
 openenv.yaml              # OpenEnv manifest
 Dockerfile                # Container specification
