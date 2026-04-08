@@ -65,6 +65,11 @@ class StepRequest(BaseModel):
     action: dict[str, Any]
 
 
+class GradeRequest(BaseModel):
+    state: dict[str, Any]
+    task: str = "hard"
+
+
 @api.post("/reset")
 def api_reset(body: ResetRequest = ResetRequest()):
     task_name = body.task.lower() if body.task.lower() in _TASK_MAP else "hard"
@@ -86,6 +91,29 @@ def api_state():
     with _env_lock:
         state = _env.state()
     return JSONResponse(content=state)
+
+
+@api.get("/tasks")
+def api_tasks():
+    return JSONResponse(
+        content={
+            "tasks": [
+                {"id": "easy", "class": "emergency_dispatch.tasks:EasyDispatchTask"},
+                {"id": "medium", "class": "emergency_dispatch.tasks:MediumDispatchTask"},
+                {"id": "hard", "class": "emergency_dispatch.tasks:HardDispatchTask"},
+            ]
+        }
+    )
+
+
+@api.post("/grader")
+def api_grader(body: GradeRequest):
+    task_name = body.task.lower() if body.task.lower() in _TASK_MAP else "hard"
+    with _env_lock:
+        _, grader = _get_env_and_grader(task_name)
+        task_label = _TASK_MAP[task_name]().name
+        grade = grader.grade(body.state, task_name=task_label)
+    return JSONResponse(content=grade.model_dump(mode="json"))
 
 
 @api.get("/health")

@@ -4,14 +4,26 @@ description: "Grid-based ambulance dispatch RL environment."
 
 simulation:
   class: "emergency_dispatch.env:EmergencyDispatchEnv"
+  reset_endpoint: "/reset"
+  step_endpoint: "/step"
+  state_endpoint: "/state"
 
 tasks:
   - id: "easy"
     description: "10x10 grid, 3 ambulances, mostly Low and Medium calls."
     class: "emergency_dispatch.tasks:EasyDispatchTask"
+    grader:
+      class: "emergency_dispatch.grader:DispatchEpisodeGrader"
+      endpoint: "/grader"
   - id: "medium"
     description: "15x15 grid, 5 ambulances, mixed calls."
     class: "emergency_dispatch.tasks:MediumDispatchTask"
+    grader:
+      class: "emergency_dispatch.grader:DispatchEpisodeGrader"
+      endpoint: "/grader"
   - id: "hard"
     description: "20x20 grid, 5 ambulances, high frequency of Critical calls."
     class: "emergency_dispatch.tasks:HardDispatchTask"
+    grader:
+      class: "emergency_dispatch.grader:DispatchEpisodeGrader"
+      endpoint: "/grader"
