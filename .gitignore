@@ -6,7 +6,7 @@ ENV/
 __pycache__/
 *.py[cod]
 *$py.class
-emergency-dispatch-env
+emergency-dispatch-env/*
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -14,7 +14,7 @@ emergency-dispatch-env
 .coverage
 .coverage.*
 htmlcov/
-emerge
+
 build/
 dist/
 site/
