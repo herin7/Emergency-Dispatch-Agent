@@ -9,20 +9,37 @@ from .models import UrgencyLevel
 
 @dataclass(slots=True)
 class BaseDispatchTask:
+    id: str
     name: str
     description: str
     config: EnvironmentConfig
+    grader_class: type[DispatchEpisodeGrader] = DispatchEpisodeGrader
 
     def create_env(self, seed: int | None = None) -> EmergencyDispatchEnv:
         return EmergencyDispatchEnv(config=self.config, seed=seed)
 
     def create_grader(self) -> DispatchEpisodeGrader:
-        return DispatchEpisodeGrader()
+        return self.grader_class()
+
+    def grade(self, final_state: dict) -> dict:
+        return self.create_grader().grade(final_state, task_name=self.name).model_dump(mode="json")
+
+    def task_spec(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "class": f"{self.__class__.__module__}:{self.__class__.__name__}",
+            "grader": {
+                "class": f"{self.grader_class.__module__}:{self.grader_class.__name__}",
+            },
+        }
 
 
 class EasyDispatchTask(BaseDispatchTask):
     def __init__(self) -> None:
         super().__init__(
+            id="easy",
             name="EasyDispatchTask",
             description="10x10 grid, 3 ambulances, mostly Low and Medium calls.",
             config=EnvironmentConfig(
@@ -44,6 +61,7 @@ class EasyDispatchTask(BaseDispatchTask):
 class MediumDispatchTask(BaseDispatchTask):
     def __init__(self) -> None:
         super().__init__(
+            id="medium",
             name="MediumDispatchTask",
             description="15x15 grid, 5 ambulances, mixed calls with active fuel constraints.",
             config=EnvironmentConfig(
@@ -65,6 +83,7 @@ class MediumDispatchTask(BaseDispatchTask):
 class HardDispatchTask(BaseDispatchTask):
     def __init__(self) -> None:
         super().__init__(
+            id="hard",
             name="HardDispatchTask",
             description="20x20 grid, 5 ambulances, frequent Critical calls.",
             config=EnvironmentConfig(

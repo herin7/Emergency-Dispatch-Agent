@@ -95,13 +95,10 @@ def api_state():
 
 @api.get("/tasks")
 def api_tasks():
+    tasks = [EasyDispatchTask(), MediumDispatchTask(), HardDispatchTask()]
     return JSONResponse(
         content={
-            "tasks": [
-                {"id": "easy", "class": "emergency_dispatch.tasks:EasyDispatchTask"},
-                {"id": "medium", "class": "emergency_dispatch.tasks:MediumDispatchTask"},
-                {"id": "hard", "class": "emergency_dispatch.tasks:HardDispatchTask"},
-            ]
+            "tasks": [task.task_spec() for task in tasks]
         }
     )
 
