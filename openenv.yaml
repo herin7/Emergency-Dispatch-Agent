@@ -1,16 +1,17 @@
-name: EmergencyDispatch
-description: Grid-based ambulance dispatch RL environment with OpenEnv-compatible tasks and programmatic grading.
+version: "0.2.0"
+name: "EmergencyDispatch"
+description: "Grid-based ambulance dispatch RL environment."
+
 simulation:
-  entrypoint: emergency_dispatch.env:EmergencyDispatchEnv
-grader:
-  entrypoint: emergency_dispatch.grader:DispatchEpisodeGrader
+  class: "emergency_dispatch.env:EmergencyDispatchEnv"
+
 tasks:
-  - name: EasyDispatchTask
-    description: 10x10 grid, 3 ambulances, mostly Low and Medium calls.
-    entrypoint: emergency_dispatch.tasks:EasyDispatchTask
-  - name: MediumDispatchTask
-    description: 15x15 grid, 5 ambulances, mixed calls with active fuel constraints.
-    entrypoint: emergency_dispatch.tasks:MediumDispatchTask
-  - name: HardDispatchTask
-    description: 20x20 grid, 5 ambulances, high frequency of Critical calls.
-    entrypoint: emergency_dispatch.tasks:HardDispatchTask
+  - id: "easy"
+    description: "10x10 grid, 3 ambulances, mostly Low and Medium calls."
+    class: "emergency_dispatch.tasks:EasyDispatchTask"
+  - id: "medium"
+    description: "15x15 grid, 5 ambulances, mixed calls."
+    class: "emergency_dispatch.tasks:MediumDispatchTask"
+  - id: "hard"
+    description: "20x20 grid, 5 ambulances, high frequency of Critical calls."
+    class: "emergency_dispatch.tasks:HardDispatchTask"
