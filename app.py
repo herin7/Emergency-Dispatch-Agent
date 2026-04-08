@@ -499,4 +499,4 @@ with gr.Blocks(title="Emergency Dispatch Agent") as demo:
 app = gr.mount_gradio_app(api, demo, path="/")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="[IP_ADDRESS]", port=7860)
+    uvicorn.run(app, host="0.0.0.0", port=7860)
