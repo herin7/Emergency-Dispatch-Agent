@@ -30,9 +30,7 @@ class BaseDispatchTask:
             "name": self.name,
             "description": self.description,
             "class": f"{self.__class__.__module__}:{self.__class__.__name__}",
-            "grader": {
-                "class": f"{self.grader_class.__module__}:{self.grader_class.__name__}",
-            },
+            "grader": f"grade/{self.id}",
         }
 
 

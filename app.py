@@ -113,6 +113,30 @@ def api_grader(body: GradeRequest):
     return JSONResponse(content=grade.model_dump(mode="json"))
 
 
+def _grade_for_task(task_name: str, state: dict[str, Any]):
+    normalized = task_name.lower() if task_name.lower() in _TASK_MAP else "hard"
+    with _env_lock:
+        _, grader = _get_env_and_grader(normalized)
+        task_label = _TASK_MAP[normalized]().name
+        grade = grader.grade(state, task_name=task_label)
+    return JSONResponse(content=grade.model_dump(mode="json"))
+
+
+@api.post("/grade/easy")
+def api_grade_easy(body: GradeRequest):
+    return _grade_for_task("easy", body.state)
+
+
+@api.post("/grade/medium")
+def api_grade_medium(body: GradeRequest):
+    return _grade_for_task("medium", body.state)
+
+
+@api.post("/grade/hard")
+def api_grade_hard(body: GradeRequest):
+    return _grade_for_task("hard", body.state)
+
+
 @api.get("/health")
 def api_health():
     return {"status": "ok"}
