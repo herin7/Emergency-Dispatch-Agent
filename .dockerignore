@@ -1,0 +1,10 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+tests/__pycache__
+emergency-dispatch-env

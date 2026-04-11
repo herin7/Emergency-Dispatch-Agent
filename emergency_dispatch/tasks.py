@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .env import EmergencyDispatchEnv, EnvironmentConfig
-from .grader import DispatchEpisodeGrader
+from .grader import DispatchEpisodeGrader, TASK_GRADER_IMPORTS
 from .models import UrgencyLevel
 
 
@@ -30,7 +30,7 @@ class BaseDispatchTask:
             "name": self.name,
             "description": self.description,
             "class": f"{self.__class__.__module__}:{self.__class__.__name__}",
-            "grader": f"grade/{self.id}",
+            "grader": TASK_GRADER_IMPORTS[self.id],
         }
 
 

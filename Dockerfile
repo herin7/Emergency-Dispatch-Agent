@@ -14,6 +14,7 @@ RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
 # Copy application code
 COPY . /app
+RUN pip install --no-deps /app
 
 # Healthcheck: verifies the environment can initialize
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \

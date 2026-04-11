@@ -1,5 +1,5 @@
 from .env import EmergencyDispatchEnv
-from .grader import DispatchEpisodeGrader
+from .grader import DispatchEpisodeGrader, grade_easy, grade_hard, grade_medium
 from .models import (
     Action,
     ActionType,
@@ -24,4 +24,7 @@ __all__ = [
     "EasyDispatchTask",
     "MediumDispatchTask",
     "UrgencyLevel",
+    "grade_easy",
+    "grade_medium",
+    "grade_hard",
 ]

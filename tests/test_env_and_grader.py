@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import unittest
 
 from emergency_dispatch.models import Action, ActionType
-from emergency_dispatch.tasks import EasyDispatchTask, HardDispatchTask
+from emergency_dispatch.tasks import EasyDispatchTask, HardDispatchTask, MediumDispatchTask
 
 
 class EmergencyDispatchEnvTests(unittest.TestCase):
@@ -41,6 +42,17 @@ class EmergencyDispatchEnvTests(unittest.TestCase):
         score = task.create_grader().grade(state).final_score
         self.assertGreaterEqual(score, 0.0)
         self.assertLessEqual(score, 1.0)
+
+    def test_task_specs_expose_importable_graders(self) -> None:
+        for task in [EasyDispatchTask(), MediumDispatchTask(), HardDispatchTask()]:
+            spec = task.task_spec()
+            module_name, function_name = spec["grader"].split(":")
+            grader = getattr(importlib.import_module(module_name), function_name)
+            score = grader()
+
+            self.assertIsInstance(score, float)
+            self.assertGreaterEqual(score, 0.0)
+            self.assertLessEqual(score, 1.0)
 
 
 if __name__ == "__main__":

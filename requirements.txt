@@ -2,6 +2,7 @@ gymnasium
 pydantic
 numpy
 openai
+openenv-core>=0.2.0
 huggingface_hub
 gradio
 fastapi

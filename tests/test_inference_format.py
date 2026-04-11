@@ -42,8 +42,19 @@ class InferenceFormatTests(unittest.TestCase):
             server.wait(timeout=5)
 
         lines = [line for line in result.stdout.strip().splitlines() if line]
-        self.assertGreaterEqual(len(lines), 3)
-        self.assertEqual(lines[0], "[START] task=HardDispatchTask env=EmergencyDispatch model=mock-model")
+        self.assertGreaterEqual(len(lines), 9)
+
+        start_lines = [line for line in lines if line.startswith("[START] ")]
+        end_lines = [line for line in lines if line.startswith("[END] ")]
+        self.assertEqual(
+            start_lines,
+            [
+                "[START] task=easy env=EmergencyDispatch model=mock-model",
+                "[START] task=medium env=EmergencyDispatch model=mock-model",
+                "[START] task=hard env=EmergencyDispatch model=mock-model",
+            ],
+        )
+        self.assertEqual(len(end_lines), 3)
         self.assertTrue(lines[-1].startswith("[END] success="))
 
         first_step = next(line for line in lines if line.startswith("[STEP] "))
@@ -66,7 +77,7 @@ class InferenceFormatTests(unittest.TestCase):
         self.assertIn(done_fragment, {"true", "false"})
         self.assertTrue(error_fragment == "null" or isinstance(error_fragment, str))
 
-        end_line = lines[-1]
+        end_line = end_lines[-1]
         score_fragment = end_line.split(" score=", 1)[1].split(" rewards=", 1)[0]
         rewards_fragment = end_line.split(" rewards=", 1)[1]
         score = float(score_fragment)

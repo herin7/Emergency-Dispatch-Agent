@@ -15,10 +15,16 @@ LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://integrate.api.nvidia.com/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
-TASK_NAME = os.getenv("EMERGENCY_DISPATCH_TASK", "hard").lower()
+TASK_SELECTION = os.getenv("EMERGENCY_DISPATCH_TASK", "all").lower()
 BENCHMARK = "EmergencyDispatch"
 MAX_COMPLETION_TOKENS = 60
 TEMPERATURE = 0.1
+TASK_ORDER = ("easy", "medium", "hard")
+TASK_MAP = {
+    "easy": EasyDispatchTask,
+    "medium": MediumDispatchTask,
+    "hard": HardDispatchTask,
+}
 
 SYSTEM_PROMPT = """You are an expert emergency dispatch coordinator managing a fleet of ambulances.
 
@@ -31,7 +37,7 @@ Maximize total reward by efficiently dispatching ambulances to emergency calls w
 - `completed_calls[]`: Resolved calls
 - `metrics`: Episode statistics (total_calls, resolved_calls, critical_calls, etc.)
 - `step_count`: Current simulation step (0 to max_steps)
-- `distance_matrix`: Precomputed Manhattan distances `{amb_id: {call_id: distance}}` — use this to find nearest ambulance
+- `distance_matrix`: Precomputed Manhattan distances `{amb_id: {call_id: distance}}` - use this to find nearest ambulance
 
 ## URGENCY LEVELS (Critical > High > Medium > Low)
 - **Critical**: Must resolve within 15 steps or receive -100 penalty
@@ -62,8 +68,8 @@ Maximize total reward by efficiently dispatching ambulances to emergency calls w
 7. **Balance coverage**: Keep ambulances distributed across the grid
 
 ## REWARD SIGNALS
-- Resolving Critical call quickly (≤5 steps): +50 bonus
-- Resolving High call quickly (≤10 steps): +25 bonus
+- Resolving Critical call quickly (<=5 steps): +50 bonus
+- Resolving High call quickly (<=10 steps): +25 bonus
 - Per-step cost: -0.1 (efficiency pressure)
 - Invalid dispatch: -5.0 penalty
 - Fuel exhaustion mid-dispatch: -30.0 penalty
@@ -80,15 +86,13 @@ For dispatch/reassign: must include both ambulance_id and call_id
 
 DO NOT include explanations, markdown formatting, or extra fields."""
 
-def get_task() -> tuple[str, Any]:
-    task_map = {
-        "easy": EasyDispatchTask,
-        "medium": MediumDispatchTask,
-        "hard": HardDispatchTask,
-    }
-    task_cls = task_map.get(TASK_NAME, HardDispatchTask)
-    task = task_cls()
-    return task.name, task
+
+def iter_task_ids() -> list[str]:
+    requested = [part.strip().lower() for part in TASK_SELECTION.split(",") if part.strip()]
+    if not requested or requested == ["all"]:
+        return list(TASK_ORDER)
+    selected = [task_id for task_id in TASK_ORDER if task_id in requested]
+    return selected or list(TASK_ORDER)
 
 
 def build_client() -> OpenAI | None:
@@ -185,8 +189,7 @@ def choose_action(
     if client is None:
         return fallback_action, "missing_hf_token"
 
-    # Include valid actions in prompt for action masking
-    valid_actions_str = json.dumps(valid_actions[:20], separators=(",", ":"))  # cap to avoid huge prompts
+    valid_actions_str = json.dumps(valid_actions[:20], separators=(",", ":"))
     prompt = (
         "Current state JSON:\n"
         f"{json.dumps(state, separators=(',', ':'))}\n\n"
@@ -208,12 +211,13 @@ def choose_action(
         if candidate is None:
             return fallback_action, "invalid_model_action"
         validated = compact_action(candidate)
-        # Validate against action mask
         if valid_actions and validated not in valid_actions:
-            # Pick closest valid action
-            for va in valid_actions:
-                if va["action_type"] == validated["action_type"] and va.get("ambulance_id") == validated.get("ambulance_id"):
-                    return va, None
+            for valid_action in valid_actions:
+                if (
+                    valid_action["action_type"] == validated["action_type"]
+                    and valid_action.get("ambulance_id") == validated.get("ambulance_id")
+                ):
+                    return valid_action, None
             return fallback_action, "action_not_in_mask"
         return validated, None
     except APIConnectionError:
@@ -228,31 +232,24 @@ def choose_action(
         return fallback_action, "api_error"
 
 
-def main() -> None:
-    task_label, task = get_task()
-    env = task.create_env(seed=7)
-    grader = task.create_grader()
-    client = build_client()
-
+def run_episode(task_id: str, client: OpenAI | None) -> None:
     rewards: list[float] = []
     score = 0.0
     steps = 0
     success = False
-    state = env.reset()
-    last_action: dict[str, Any] | None = None
 
-    log_start(task=task_label, env=BENCHMARK, model=MODEL_NAME)
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     try:
+        task_cls = TASK_MAP[task_id]
+        task = task_cls()
+        env = task.create_env(seed=7)
+        grader = task.create_grader()
+        state = env.reset()
         done = False
         while not done:
-            # Get fallback action from heuristic
             fallback_action = env.heuristic_action()
-
-            # Get valid action mask
             valid_actions = env.valid_actions_for(state)
-
-            # Get action from LLM (with fallback on error)
             action, action_error = choose_action(
                 client=client,
                 model_name=MODEL_NAME,
@@ -260,26 +257,26 @@ def main() -> None:
                 valid_actions=valid_actions,
                 fallback=fallback_action,
             )
-
-            # Execute action
             state, reward, done, _ = env.step(action)
             steps += 1
             rewards.append(float(reward))
 
-            # Log step
-            last_action = action
             action_str = json.dumps(action, separators=(",", ":"))
             log_step(step=steps, action=action_str, reward=float(reward), done=done, error=action_error)
 
-        # Grade final state with task-specific objective
-        score = grader.grade(state, task_name=task_label).final_score
+        score = grader.grade(state, task_name=task_id).final_score
         success = True
     except Exception as exc:
-        success = False
         if steps == 0:
             log_step(step=1, action="null", reward=0.0, done=True, error=str(exc))
     finally:
         log_end(success=success, steps=steps, score=score, rewards=rewards)
+
+
+def main() -> None:
+    client = build_client()
+    for task_id in iter_task_ids():
+        run_episode(task_id=task_id, client=client)
 
 
 if __name__ == "__main__":

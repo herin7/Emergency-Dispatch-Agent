@@ -12,12 +12,12 @@ tasks:
   - id: easy
     description: "10x10 grid, 3 ambulances, mostly Low and Medium calls."
     class: "emergency_dispatch.tasks:EasyDispatchTask"
-    grader: grade/easy
+    grader: "emergency_dispatch.grader:grade_easy"
   - id: medium
     description: "15x15 grid, 5 ambulances, mixed calls."
     class: "emergency_dispatch.tasks:MediumDispatchTask"
-    grader: grade/medium
+    grader: "emergency_dispatch.grader:grade_medium"
   - id: hard
     description: "20x20 grid, 5 ambulances, high frequency of Critical calls."
     class: "emergency_dispatch.tasks:HardDispatchTask"
-    grader: grade/hard
+    grader: "emergency_dispatch.grader:grade_hard"
